@@ -24,18 +24,6 @@ if F.endswith('AltServerApp.cpp'):
     # fs::path AltServerApp::appDataDirectoryPath
     content = content.replace(b'\r', b'')
 
-    # --- iOS 26 TXM workaround (this fork) ------------------------------------------------
-    # iOS 26.4+ rejects AltServer-Linux's code signature in the kernel (TXM), so apps install
-    # but crash instantly on launch (FrontBoard "Bootstrap failed", no crash report). As a
-    # workaround this fork caches the signing key with an EMPTY p12 password, so it can be
-    # extracted and the app re-signed with a modern signer (rcodesign) whose signature iOS 26
-    # accepts. Upstream caches it encrypted with the cert's machineId (a random UUID never
-    # stored locally), which makes the key impossible to reuse offline. See IOS26.md.
-    content = content.replace(
-        b'certificate->encryptedP12Data(*machineIdentifier)',
-        b'certificate->encryptedP12Data("")')
-    # -------------------------------------------------------------------------------------
-
     content = content.replace(b'#include <windows.h>\n', b'')
     content = content.replace(b'#include <windowsx.h>\n', b'')
     content = content.replace(b'#include <strsafe.h>\n', b'')

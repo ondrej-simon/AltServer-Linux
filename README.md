@@ -1,9 +1,11 @@
 # AltServer-Linux
 AltServer for AltStore, but on-device
 
-> **iOS 26 fork.** On iOS 26.4+ upstream AltServer-Linux installs apps that crash instantly on
-> launch (kernel TXM rejects the signature; see [issue #131](https://github.com/NyaMisty/AltServer-Linux/issues/131)).
-> This fork adds a confirmed Linux-only workaround — re-sign with `rcodesign`. **See [IOS26.md](IOS26.md).**
+> **iOS 26 fork.** On iOS 26.4+ upstream AltServer-Linux apps crash on launch / fail to install
+> (the kernel's TXM rejects ldid's signature; see [issue #131](https://github.com/NyaMisty/AltServer-Linux/issues/131)).
+> This fork **signs apps with [`rcodesign`](https://github.com/indygreg/apple-platform-rs) instead of
+> ldid**, so they install and launch directly on iOS 26. Needs `rcodesign` + `openssl` on the host.
+> **See [IOS26.md](IOS26.md).** (Confirmed: iPhone 15 Pro, iOS 26.5.)
 
 ## Usage
 

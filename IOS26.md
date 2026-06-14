@@ -1,91 +1,65 @@
 # AltServer-Linux on iOS 26 (this fork)
 
-On **iOS 26.4 and later**, apps sideloaded with upstream AltServer-Linux **install but crash the
-instant you launch them** — blank icon, a brief flash, no error, and **no crash report**. This is a
-stale code-signing implementation in AltServer-Linux, not a problem with the app you're installing.
+Upstream AltServer-Linux installs apps on **iOS 26.4+** that **crash instantly on launch** (blank
+icon, no crash report), and with stricter signing they fail to install at all. The cause is ldid's
+code signature, which iOS 26's kernel **TXM (Trusted Execution Monitor)** rejects. Upstream tracking
+issue: <https://github.com/NyaMisty/AltServer-Linux/issues/131>.
 
-This fork adds a small change so you can get apps running on iOS 26 from Linux today, by re-signing
-with a modern signer ([`rcodesign`](https://github.com/indygreg/apple-platform-rs)).
+**This fork fixes it by signing apps with [`rcodesign`](https://github.com/indygreg/apple-platform-rs)
+instead of ldid.** AltServer still does everything else (Apple auth, certificate, provisioning
+profile, install) — only the signing step is swapped. Result: apps **install and launch directly on
+iOS 26**, no extra steps.
 
-Upstream tracking issue: <https://github.com/NyaMisty/AltServer-Linux/issues/131>.
+> Confirmed on iPhone 15 Pro, iOS 26.5: `Installation Succeeded`, app launches.
 
-## Why it breaks
+## Why ldid doesn't work on iOS 26
 
-iOS 26 enforces code signatures in the kernel via **TXM (Trusted Execution Monitor)**. Capture the
-device log while tapping the app (`idevicesyslog`) and you'll see, at every launch:
+ldid (vendored at ~2022) diverges from modern `codesign` in several places that iOS 26 now enforces:
 
-```
-kernel  TXM [Error]: CodeSignature: selector: 24 | 0x53 | 0x23 | 9
-SpringBoard(FrontBoard)  [app<…>:-1] Now flagged as pending exit for reason: Bootstrap failed
-```
+- **DER entitlements** emitted as a bare ASN.1 `SET` instead of Apple's `[APPLICATION 16] { INTEGER
+  version, [CONTEXT 16] { … } }` schema (and DER booleans as `0x01` instead of `0xFF`).
+- A legacy **SHA-1-primary CodeDirectory** (hash agility) instead of **SHA-256-only**.
+- **Empty designated requirements** on the app and every framework.
+- An older **CodeResources** resource-sealing format.
 
-AMFI (user space) **accepts the provisioning profile** (`AMFI: profile validated the code signature`),
-but the kernel's TXM rejects the **signature encoding** AltServer-Linux produces, so the process is
-killed at `exec` (`pid -1`) before any code runs. Apple's AltServer for Windows/macOS fixed this in
-**v1.7.4** by updating its code-signing library; that fix hasn't been ported to AltServer-Linux
-(latest release v0.0.5). The same bug blocks **SideStore** on Linux, since its installer
-(`SideStore/Altcon`) downloads this same AltServer-Linux to sign `SideStore.ipa`.
+You can bring ldid most of the way (DER + SHA-256 CD + a DR generator make the Mach-O signatures
+byte-identical to rcodesign), but CodeResources — and likely more — still diverge. Rather than
+re-implement modern `codesign` inside ldid, this fork uses rcodesign, which already does it all
+correctly. (An RFC3161 timestamp is **not** required for development installs.)
 
-## What this fork changes
+## What the fix changes
 
-A one-line change in `makefiles/rewrite_altserver_source.py`: AltServer is made to cache its signing
-key with an **empty p12 password** (`encryptedP12Data(*machineIdentifier)` → `encryptedP12Data("")`).
-Upstream encrypts that cache with the certificate's `machineId` — a random UUID generated at
-cert-creation time (`AltSign/AppleAPI.cpp`: `{ "machineId", make_uuid() }`), sent to Apple and
-**never stored locally** — which makes the signing key impossible to reuse offline. With the empty
-password, you can decrypt the key and re-sign the app with `rcodesign`, whose signature iOS 26 accepts.
+A single build-time edit in `makefiles/AltSign-build/rewrite_altsign_source.py`: in AltSign's
+`Signer::SignApp`, the `ldid::Sign(...)` call is replaced with a shell-out to
+`rcodesign sign --pem-file <key> --entitlements-xml-file <ents> <app>`. The bundle is already
+prepared by AltSign (provisioning profile embedded, per-app entitlements computed), and
+`CertificatesContent` already builds an empty-password p12 with the leaf + WWDR + Apple Root chain;
+we convert that to PEM with `openssl` and hand it to rcodesign. The submodule and ldid are untouched.
 
-The actual signature AltServer-Linux emits is left untouched; this fork is a pragmatic re-sign
-workaround, not a fix to the bundled `ldid`. The proper fix is to port v1.7.4's code-signing update.
+## Requirements (on the Linux host that runs AltServer)
+
+- **`rcodesign`** (apple-codesign) — download a release from
+  <https://github.com/indygreg/apple-platform-rs/releases>. Point `ALTSERVER_RCODESIGN` at it (or put
+  it on `PATH`).
+- **`openssl`**, plus the usual `libimobiledevice` / `usbmuxd`, and an **anisette** server.
 
 ## Build
-
-Use the project's own Alpine/musl Docker builder (no toolchain setup needed):
 
 ```bash
 docker run --rm -v "$PWD":/workdir -w /workdir \
   ghcr.io/nyamisty/altserver_builder_alpine_amd64 \
-  bash -c 'mkdir -p build && cd build && make -f ../Makefile -j"$(nproc)"'
+  bash -c 'mkdir -p build && cd build && (make -f ../Makefile -j"$(nproc)" || make -f ../Makefile -j1)'
 # -> build/AltServer-x86_64   (use the arm/i386 builder image for other arches)
 ```
 
-## Use it
+## Use
 
-You need a local **anisette** server and **rcodesign**, plus `libimobiledevice` /
-`ideviceinstaller` on the host.
+```bash
+ALTSERVER_RCODESIGN="/path/to/rcodesign" \
+ALTSERVER_ANISETTE_SERVER="http://localhost:6969" \
+  ./AltServer-x86_64 -u <UDID> -a <apple-id> -p '<password>' YourApp.ipa
+```
 
-1. **Provision once** with the patched binary (mints a cert cached with an empty password and pushes
-   a provisioning profile to the device). Delete any old cached cert first so a fresh one is minted:
-
-   ```bash
-   rm -f AltServerData/Certificates/*.p12
-   ALTSERVER_ANISETTE_SERVER="http://localhost:6969" \
-     ./build/AltServer-x86_64 -u <UDID> -a <apple-id> -p '<password>' YourApp.ipa
-   ```
-
-   Its own install still crashes on launch — **ignore that**. You only need the empty-password cert
-   it just cached and the profile it pushed to the device.
-
-2. **Re-sign with rcodesign and install** — either run [`tools/ios26-resign.sh YourApp.ipa`](tools/ios26-resign.sh),
-   or do it by hand:
-
-   ```bash
-   # key out of the empty-password cache (RC2-40 + OpenSSL-3 empty-pw MAC quirk -> -legacy -nomacver)
-   openssl pkcs12 -legacy -nomacver -in AltServerData/Certificates/*.p12 -nodes -passin pass: -out key.pem
-   # current profile + its entitlements
-   ideviceprovision copy ./profiles
-   #  -> pick profiles/<uuid>.mobileprovision for your app; decode its Entitlements to ents.plist,
-   #     set the app's CFBundleIdentifier to the profile's application-identifier (minus the team prefix),
-   #     and copy the profile into the bundle as embedded.mobileprovision
-   rcodesign sign --pem-file key.pem --entitlements-xml-file ents.plist YourApp.app
-   # repackage to .ipa and install
-   ideviceinstaller install YourApp-resigned.ipa
-   ```
-
-   The app launches. ✅ (Confirmed on iPhone 15 Pro, iOS 26.5.)
-
-## Notes
-
-- A free Apple ID's signature/profile lasts **7 days** — re-run both steps to refresh.
-- Re-using the **same bundle id** avoids the free account's 10-App-IDs-per-7-days limit.
-- Run your **own** anisette server; public ones tend to get your Apple ID rate-limited.
+It authenticates (enter the 2FA code when prompted), provisions a cert + profile, signs the bundle
+with rcodesign (you'll see `rcodesign signing: …`), and installs — `Installation Succeeded`, and the
+app launches. A **free** Apple ID's signature lasts 7 days; re-run to refresh.
