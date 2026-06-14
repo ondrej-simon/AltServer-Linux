@@ -1,7 +1,9 @@
 name: Build AltServer
 
 on:
-  push:
+  # NOTE (fork): auto-triggers (push + the 4-hourly schedule) are disabled so this upstream-tracking
+  # build doesn't run on every push or burn Actions minutes building 4 arches. Releases are produced
+  # by release.yml on a tag push. Restore the `push:` / `schedule:` keys to re-enable nightlies.
   workflow_dispatch:
     inputs:
       sync_upstream:
@@ -12,9 +14,6 @@ on:
         required: false
         default: false
   repository_dispatch:
-
-  schedule:
-    - cron: "0 */4 * * *" # min hour day week year
 
 
 env:

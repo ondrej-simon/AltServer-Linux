@@ -1,0 +1,91 @@
+name: Release
+
+# Builds the AltServer-Linux binaries for all arches and publishes them as a GitHub Release.
+# Triggered by pushing a tag (e.g. v0.0.5-ios26). This fork signs apps with rcodesign instead of
+# ldid so they install + launch on iOS 26 (see IOS26.md).
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, aarch64, armv7, i386]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Build + strip (${{ matrix.arch }})
+        run: |
+          image="ghcr.io/nyamisty/altserver_builder_alpine_${{ matrix.arch }}"
+          docker pull "$image"
+          # -j parallel is fast but `ar` can race on shared archives; a serial pass finishes it off.
+          # strip inside the container so it matches the target arch.
+          docker run --rm -v "${PWD}":/workdir -w /workdir "$image" bash -c '
+            set -e
+            mkdir -p build && cd build
+            make -f ../Makefile -j"$(nproc)" || make -f ../Makefile -j1
+            strip --strip-all AltServer-* || true
+          '
+          mkdir -p dist
+          cp build/AltServer-* dist/
+          chmod +x dist/*
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: altserver-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - run: ls -la dist
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          fail_on_unmatched_files: true
+          body: |
+            **AltServer-Linux that installs on iOS 26** — signs apps with
+            [`rcodesign`](https://github.com/indygreg/apple-platform-rs) instead of the vendored
+            `ldid`, whose signature iOS 26's kernel **TXM** rejects (upstream
+            [#131](https://github.com/NyaMisty/AltServer-Linux/issues/131)). Everything else
+            (Apple auth, certificate, provisioning, install) is unchanged. Confirmed on iPhone 15 Pro,
+            iOS 26.5.
+
+            **Requirements on the host:** `rcodesign` (apple-codesign — *not bundled*; point
+            `ALTSERVER_RCODESIGN` at it), `openssl`, `libimobiledevice`/`usbmuxd`, and an anisette
+            server.
+
+            ```bash
+            ALTSERVER_RCODESIGN=/path/to/rcodesign \
+            ALTSERVER_ANISETTE_SERVER=http://localhost:6969 \
+              ./AltServer-x86_64 -u <UDID> -a <apple-id> -p '<password>' YourApp.ipa
+            ```
+
+            Full details: [IOS26.md](https://github.com/ondrej-simon/AltServer-Linux/blob/new/IOS26.md).
