@@ -1,6 +1,10 @@
 # AltServer-Linux
 AltServer for AltStore, but on-device
 
+> **iOS 26 fork.** On iOS 26.4+ upstream AltServer-Linux installs apps that crash instantly on
+> launch (kernel TXM rejects the signature; see [issue #131](https://github.com/NyaMisty/AltServer-Linux/issues/131)).
+> This fork adds a confirmed Linux-only workaround — re-sign with `rcodesign`. **See [IOS26.md](IOS26.md).**
+
 ## Usage
 
 - Install IPA: `./AltServer -u [UDID] -a [AppleID account] -p [AppleID password] [ipaPath.ipa]`
